@@ -19,11 +19,13 @@ jobs:
 
       - name: Build for iPhone (no code signing)
         run: |
-          xcodebuild -project PitchTest.xcodeproj -scheme PitchTest \
-            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build | tail -n 60
+          set -o pipefail
+          xcodebuild -project PitchTest.xcodeproj -scheme PitchTest             -configuration Release -sdk iphoneos -destination 'generic/platform=iOS'             -derivedDataPath build             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""             build 2>&1 | tee build.log | tail -n 40
+
+      - name: Show compile errors as annotations
+        if: failure()
+        run: |
+          grep -E "error:|fatal error|Undefined symbols|ld: " build.log | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l:0:480}"; done || true
 
       - name: Package as an .ipa
         run: |
