@@ -1,0 +1,31 @@
+name: PitchTest
+options:
+  bundleIdPrefix: com.example.pitchtest
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  PitchTest:
+    type: application
+    platform: iOS
+    sources:
+      - path: PitchTest
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.pitchtest.app
+        SWIFT_OBJC_BRIDGING_HEADER: PitchTest/Native/PitchTest-Bridging-Header.h
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/PitchTest/Native"
+        CLANG_CXX_LANGUAGE_STANDARD: gnu++17
+        GCC_OPTIMIZATION_LEVEL: "3"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "The pitch trainer listens to your voice to find the note you sing."
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+    dependencies:
+      - sdk: AudioToolbox.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreAudio.framework
