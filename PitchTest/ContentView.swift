@@ -8,7 +8,58 @@ final class EngineModel: ObservableObject {
     @Published var error = ""
     @Published var s = PtStatus()
     @Published var startupInfo = ""
+    @Published var recording = false
+    @Published var takes: [Take] = []
     private var timer: Timer?
+
+    init() { refreshTakes() }
+
+    // ---- recording: <name>.wav (raw mic, 16-bit mono 48 kHz) + <name>.csv (one row per detector run) ----
+    func recordingsDir() -> URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func toggleRecord() {
+        if recording {
+            pt_record_stop()
+            recording = false
+            refreshTakes()
+            return
+        }
+        guard running else { return }
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let base = recordingsDir().appendingPathComponent("take-" + f.string(from: Date())).path
+        if pt_record_start(base) == 0 {
+            recording = true
+            error = ""
+        } else {
+            error = "could not start recording (no space or no permission?)"
+        }
+    }
+
+    func refreshTakes() {
+        let dir = recordingsDir()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        var out: [Take] = []
+        for n in names where n.hasSuffix(".wav") {
+            let base = String(n.dropLast(4))
+            let wav = dir.appendingPathComponent(n)
+            let csv = dir.appendingPathComponent(base + ".csv")
+            let size = (try? FileManager.default.attributesOfItem(atPath: wav.path)[.size] as? Int) ?? 0
+            out.append(Take(id: base, wav: wav, csv: csv, wavBytes: size))
+        }
+        takes = out.sorted { $0.id > $1.id }
+    }
+
+    func deleteTake(_ t: Take) {
+        try? FileManager.default.removeItem(at: t.wav)
+        try? FileManager.default.removeItem(at: t.csv)
+        refreshTakes()
+    }
 
     // Earbuds with a mic in the cable make iOS use THAT mic, which sits next to the earbuds and can pick the tone
     // up (cable crosstalk or leakage). Prefer the phone's own built-in mic.
@@ -43,6 +94,7 @@ final class EngineModel: ObservableObject {
     }
 
     func stop() {
+        if recording { toggleRecord() }
         timer?.invalidate()
         timer = nil
         pt_stop()
@@ -134,6 +186,27 @@ final class EngineModel: ObservableObject {
     }
 }
 
+struct Take: Identifiable {
+    let id: String      // base file name, e.g. take-20261029-124300
+    let wav: URL
+    let csv: URL
+    let wavBytes: Int
+}
+
+struct ShareItem: Identifiable {
+    let id = UUID()
+    let urls: [URL]
+}
+
+// The iOS share sheet: Save to Files, AirDrop, Mail, ...
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
 private func text<T>(_ tuple: T) -> String {
     // C char arrays arrive in Swift as tuples of Int8; read them as a C string.
     return withUnsafeBytes(of: tuple) { raw -> String in
@@ -146,6 +219,7 @@ private func text<T>(_ tuple: T) -> String {
 struct ContentView: View {
     @StateObject private var m = EngineModel()
     @State private var copied = false
+    @State private var share: ShareItem?
 
     var body: some View {
         let s = m.s
@@ -158,6 +232,37 @@ struct ContentView: View {
                 Button(m.running ? "Stop" : "Start") { m.running ? m.stop() : m.start() }
                     .buttonStyle(.borderedProminent)
                 if !m.error.isEmpty { Text(m.error).foregroundColor(.red) }
+
+                GroupBox("Record") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(m.recording ? "Recording ... tap to STOP" : "Record: off (tap to start)") { m.toggleRecord() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(m.recording ? .red : .accentColor)
+                            .disabled(!m.running)
+                        if m.recording {
+                            Text(String(format: "REC %.1f s   dropped samples: %llu", s.rec_seconds, s.rec_dropped))
+                                .foregroundColor(.red)
+                        } else if !m.running {
+                            Text("Press Start first.").font(.footnote).foregroundColor(.secondary)
+                        }
+                        Text("Saves the raw microphone audio (.wav) and one row per detector run (.csv: time, Hz, clarity, level, found, target, cents, tone on).")
+                            .font(.footnote).foregroundColor(.secondary)
+                        ForEach(m.takes) { t in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(t.id).font(.system(.footnote, design: .monospaced))
+                                    Text(String(format: "%.1f MB audio", Double(t.wavBytes) / 1_000_000)).font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button("Share") { share = ShareItem(urls: [t.wav, t.csv]) }
+                                Button("Delete", role: .destructive) { m.deleteTake(t) }
+                            }.buttonStyle(.bordered)
+                        }
+                        if !m.takes.isEmpty {
+                            Text("Also in the Files app: On My iPhone > PitchTest > Recordings.").font(.footnote).foregroundColor(.secondary)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 if m.running {
                     GroupBox("Now") {
@@ -233,5 +338,6 @@ struct ContentView: View {
             }
             .padding()
         }
+        .sheet(item: $share) { item in ActivityView(items: item.urls) }
     }
 }

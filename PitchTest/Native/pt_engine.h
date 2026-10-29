@@ -27,6 +27,9 @@ typedef struct {
   unsigned long long chunks;        // detector runs
   float in_buf_ms;     // miniaudio buffer capacity (period x periods). NOT a latency.
   float out_buf_ms;
+  int rec_on;                       // recording is running
+  float rec_seconds;                // audio written so far
+  unsigned long long rec_dropped;   // samples lost because the disk writer fell behind (should stay 0)
   float window_ms;     // analysis window length
   float hop_ms;        // time between detector runs
 
@@ -67,6 +70,8 @@ void pt_set_tonic(int on);
 void pt_release_step(int up);       // release hold +/- 15 ms (15..600)
 void pt_leak_test(void);            // stay silent: 2 s tone off, then 2 s of a 440 Hz tone at the current level
 void pt_reset_metrics(void);
+int pt_record_start(const char* base_path);   // writes <base>.wav (raw mic, 16-bit mono 48 kHz) and <base>.csv (one row per detector run); 0 = ok
+void pt_record_stop(void);
 double pt_io_buffer_seconds(void);   // the IO buffer duration the app asks iOS for (phone_tuning.h)
 void pt_get_status(PtStatus* out);
 int pt_event(int index, char* buf, int len);   // recent events, 0 = newest; returns 0 if none

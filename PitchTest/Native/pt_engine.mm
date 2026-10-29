@@ -10,7 +10,9 @@
 #include <string.h>
 
 #include <atomic>
+#include <string>
 #include <chrono>
+#include <thread>
 #include <vector>
 
 #include "analysis_window.h"
@@ -83,11 +85,174 @@ struct Shared {
   }
 };
 
+// ---- recorder -------------------------------------------------------------------------------------------------
+// The audio thread only copies into two preallocated single-producer / single-consumer rings. A writer thread
+// drains them to disk: <base>.wav (16-bit mono 48 kHz, the raw microphone input) and <base>.csv (one row per
+// detector run). Nothing here allocates, locks or touches files on the audio thread.
+struct Row {
+  int64_t sample_end;   // input sample index at the end of the analysis window
+  float hz, clarity, rms_db, cents;
+  int16_t target;       // MIDI note, -1 = none
+  uint8_t found, usable, tone_on, muted;
+};
+
+class Recorder {
+ public:
+  void begin() {
+    audio_.assign(kAudioCap, 0.0f);
+    rows_.assign(kRowCap, Row{});
+  }
+
+  bool start(const char* base) {
+    if (active_.load()) return false;
+    std::string b(base);
+    wav_ = fopen((b + ".wav").c_str(), "wb");
+    csv_ = fopen((b + ".csv").c_str(), "wb");
+    if (!wav_ || !csv_) {
+      closeFiles();
+      return false;
+    }
+    uint8_t hdr[44] = {0};
+    fwrite(hdr, 1, sizeof(hdr), wav_);   // patched with the real sizes in stop()
+    fputs("sample_end,time_s,hz,clarity,mic_db,found,usable,target_midi,cents,tone_on,muted\n", csv_);
+    a_head_ = 0; a_tail_ = 0; r_head_ = 0; r_tail_ = 0;
+    samples_ = 0;
+    dropped_ = 0;
+    run_.store(true);
+    active_.store(true);
+    writer_ = std::thread([this] { loop(); });
+    return true;
+  }
+
+  void stop() {
+    if (!run_.load()) return;
+    active_.store(false);
+    run_.store(false);
+    if (writer_.joinable()) writer_.join();
+    // WAV header: 16-bit mono PCM at the input rate.
+    const uint32_t data_bytes = static_cast<uint32_t>(samples_ * 2);
+    const uint32_t rate = kMicSampleRateHz;
+    uint8_t h[44];
+    memcpy(h, "RIFF", 4);
+    put32(h + 4, 36 + data_bytes);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    put32(h + 16, 16);
+    put16(h + 20, 1);          // PCM
+    put16(h + 22, 1);          // mono
+    put32(h + 24, rate);
+    put32(h + 28, rate * 2);   // byte rate
+    put16(h + 32, 2);          // block align
+    put16(h + 34, 16);
+    memcpy(h + 36, "data", 4);
+    put32(h + 40, data_bytes);
+    if (wav_) {
+      fseek(wav_, 0, SEEK_SET);
+      fwrite(h, 1, sizeof(h), wav_);
+    }
+    closeFiles();
+  }
+
+  bool active() const { return active_.load(std::memory_order_acquire); }
+  uint64_t samples() const { return samples_.load(); }
+  uint64_t dropped() const { return dropped_.load(); }
+
+  // ---- audio thread ----
+  void pushAudio(const float* x, size_t n) {
+    const size_t head = a_head_.load(std::memory_order_relaxed);
+    const size_t tail = a_tail_.load(std::memory_order_acquire);
+    if (kAudioCap - (head - tail) < n) {
+      dropped_.fetch_add(n);
+      return;
+    }
+    for (size_t i = 0; i < n; ++i) audio_[(head + i) & (kAudioCap - 1)] = x[i];
+    a_head_.store(head + n, std::memory_order_release);
+  }
+
+  void pushRow(const Row& r) {
+    const size_t head = r_head_.load(std::memory_order_relaxed);
+    const size_t tail = r_tail_.load(std::memory_order_acquire);
+    if (kRowCap - (head - tail) < 1) return;
+    rows_[head & (kRowCap - 1)] = r;
+    r_head_.store(head + 1, std::memory_order_release);
+  }
+
+ private:
+  static constexpr size_t kAudioCap = 1u << 20;   // 1,048,576 samples = 21.8 s of buffer
+  static constexpr size_t kRowCap = 1u << 12;
+
+  static void put32(uint8_t* p, uint32_t v) { p[0] = v & 255; p[1] = (v >> 8) & 255; p[2] = (v >> 16) & 255; p[3] = (v >> 24) & 255; }
+  static void put16(uint8_t* p, uint16_t v) { p[0] = v & 255; p[1] = (v >> 8) & 255; }
+
+  bool drain() {
+    bool did = false;
+    {
+      const size_t head = a_head_.load(std::memory_order_acquire);
+      size_t tail = a_tail_.load(std::memory_order_relaxed);
+      int16_t buf[2048];
+      while (tail != head) {
+        size_t n = head - tail;
+        if (n > 2048) n = 2048;
+        for (size_t i = 0; i < n; ++i) {
+          float v = audio_[(tail + i) & (kAudioCap - 1)];
+          v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
+          buf[i] = static_cast<int16_t>(lrintf(v * 32767.0f));
+        }
+        fwrite(buf, sizeof(int16_t), n, wav_);
+        tail += n;
+        samples_.fetch_add(n);
+        did = true;
+      }
+      a_tail_.store(tail, std::memory_order_release);
+    }
+    {
+      const size_t head = r_head_.load(std::memory_order_acquire);
+      size_t tail = r_tail_.load(std::memory_order_relaxed);
+      while (tail != head) {
+        const Row& r = rows_[tail & (kRowCap - 1)];
+        fprintf(csv_, "%lld,%.4f,%.2f,%.3f,%.1f,%d,%d,%d,%.1f,%d,%d\n", static_cast<long long>(r.sample_end),
+                static_cast<double>(r.sample_end) / kMicSampleRateHz, r.hz, r.clarity, r.rms_db, r.found, r.usable, r.target, r.cents,
+                r.tone_on, r.muted);
+        ++tail;
+        did = true;
+      }
+      r_tail_.store(tail, std::memory_order_release);
+    }
+    return did;
+  }
+
+  void loop() {
+    for (;;) {
+      const bool did = drain();
+      if (!run_.load() && !did) break;
+      if (!did) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    fflush(wav_);
+    fflush(csv_);
+  }
+
+  void closeFiles() {
+    if (wav_) { fclose(wav_); wav_ = nullptr; }
+    if (csv_) { fclose(csv_); csv_ = nullptr; }
+  }
+
+  std::vector<float> audio_;
+  std::vector<Row> rows_;
+  std::atomic<size_t> a_head_{0}, a_tail_{0}, r_head_{0}, r_tail_{0};
+  std::atomic<uint64_t> samples_{0}, dropped_{0};
+  std::atomic<bool> active_{false}, run_{false};
+  std::thread writer_;
+  FILE* wav_ = nullptr;
+  FILE* csv_ = nullptr;
+};
+
+Recorder g_rec;
+
 inline float toDb(double meanSquare) { return meanSquare > 1e-14 ? 10.0f * static_cast<float>(log10(meanSquare)) : -120.0f; }
 
 class Engine {
  public:
   bool begin() {
+    g_rec.begin();
     if (!decimator_.begin(kDecimatorTaps, kDecimatorCutoffHz, kRate)) return false;
     window_.begin(kWinDec);
     if (!detector_.begin(kWinDec)) return false;
@@ -143,6 +308,7 @@ class Engine {
     }
 
     if (in != nullptr) {
+      if (g_rec.active()) g_rec.pushAudio(in, k);
       onsetScan(in, k, sh);
       const size_t m = decimator_.process(in, k, dec_.data());
       size_t used = 0;
@@ -333,7 +499,22 @@ class Engine {
     sh.rms.store(rms);
     sh.valid.store(gate_);
     sh.target.store(tgt);
-    sh.cents.store(usable && tgt >= 0 ? (exact - static_cast<float>(tgt)) * 100.0f : 0.0f);
+    const float cents = usable && tgt >= 0 ? (exact - static_cast<float>(tgt)) * 100.0f : 0.0f;
+    sh.cents.store(cents);
+    if (g_rec.active()) {
+      Row row;
+      row.sample_end = t;
+      row.hz = r.frequency_hz;
+      row.clarity = r.clarity;
+      row.rms_db = 20.0f * log10f(rms > 1e-6f ? rms : 1e-6f);
+      row.cents = cents;
+      row.target = static_cast<int16_t>(tgt);
+      row.found = gate_ ? 1 : 0;
+      row.usable = usable ? 1 : 0;
+      row.tone_on = audible_ ? 1 : 0;
+      row.muted = sh.muted.load() ? 1 : 0;
+      g_rec.pushRow(row);
+    }
   }
 
   static int keyFor(int slot) {
@@ -471,6 +652,8 @@ void pt_leak_test(void) {
 }
 void pt_reset_metrics(void) { g_shared.reset_requested.store(true); }
 double pt_io_buffer_seconds(void) { return kPhIoBufferSeconds; }
+int pt_record_start(const char* base_path) { return g_rec.start(base_path) ? 0 : 1; }
+void pt_record_stop(void) { g_rec.stop(); }
 
 void pt_get_status(PtStatus* o) {
   memset(o, 0, sizeof(*o));
@@ -496,6 +679,9 @@ void pt_get_status(PtStatus* o) {
   o->chunks = n;
   o->in_buf_ms = g_in_ms;
   o->out_buf_ms = g_out_ms;
+  o->rec_on = g_rec.active() ? 1 : 0;
+  o->rec_seconds = static_cast<float>(static_cast<double>(g_rec.samples()) / kRate);
+  o->rec_dropped = g_rec.dropped();
   o->window_ms = 1000.0f * kPhWindowSamples / kRate;
   o->hop_ms = 1000.0f * kPhHopSamples / kRate;
 

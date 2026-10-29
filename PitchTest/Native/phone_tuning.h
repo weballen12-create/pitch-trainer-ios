@@ -16,9 +16,10 @@ constexpr float kPhMaxHz = 1500.0f;
 constexpr uint32_t kPhLostHoldMs = 100;      // "lost" only after this long without a stay-valid window
 
 // ---- tone shape ---------------------------------------------------------------------------------------------
-constexpr float kPhAttackMs = 4.0f;          // fade-in, just enough to avoid a click
+constexpr float kPhAttackMs = 0.0f;          // fade-in: 0 = the tone starts at full level on its first sample (the phase
+                                             // restarts at zero, so it starts on a zero crossing; a hard start may still tick)
 constexpr float kPhFadeOutMs = 10.0f;        // fade-out once the tone is released
-constexpr float kPhGlideMs = 20.0f;          // slide on LATER note changes only; the first note after silence jumps
+constexpr float kPhGlideMs = 0.0f;           // 0 = no smoothing: a new note is the new frequency on the next sample
 constexpr uint32_t kPhReleaseMs = 120;       // tracker release hold (adjustable on screen)
 
 // ---- audio I/O ----------------------------------------------------------------------------------------------
