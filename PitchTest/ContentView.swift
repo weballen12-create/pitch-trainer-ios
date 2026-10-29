@@ -7,6 +7,7 @@ final class EngineModel: ObservableObject {
     @Published var running = false
     @Published var error = ""
     @Published var s = PtStatus()
+    @Published var startupInfo = ""
     private var timer: Timer?
 
     // Earbuds with a mic in the cable make iOS use THAT mic, which sits next to the earbuds and can pick the tone
@@ -14,6 +15,7 @@ final class EngineModel: ObservableObject {
     private func preferBuiltInMic() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, options: [])
+        try? session.setPreferredIOBufferDuration(pt_io_buffer_seconds())
         try? session.setActive(true)
         if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
             try? session.setPreferredInput(builtIn)
@@ -24,6 +26,9 @@ final class EngineModel: ObservableObject {
         preferBuiltInMic()
         let r = pt_start()
         if r == 0 {
+            // miniaudio sets its own IO buffer while starting, so ask again and then log what iOS really granted.
+            try? AVAudioSession.sharedInstance().setPreferredIOBufferDuration(pt_io_buffer_seconds())
+            startupInfo = sessionSnapshot(prefix: "startup")
             running = true
             error = ""
             timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -42,6 +47,31 @@ final class EngineModel: ObservableObject {
         timer = nil
         pt_stop()
         running = false
+    }
+
+    // IO buffer + input/output latency as iOS reports them, in milliseconds.
+    func deviceLatencyMs() -> (io: Double, input: Double, output: Double) {
+        let s = AVAudioSession.sharedInstance()
+        return (s.ioBufferDuration * 1000, s.inputLatency * 1000, s.outputLatency * 1000)
+    }
+
+    func sessionSnapshot(prefix: String) -> String {
+        let d = deviceLatencyMs()
+        return String(format: "%@: asked IO buffer %.1f ms, granted %.1f ms, input latency %.1f ms, output latency %.1f ms",
+                      prefix, pt_io_buffer_seconds() * 1000, d.io, d.input, d.output)
+    }
+
+    // "latency: onset->found X ms, found->tone Y ms, total Z ms (avg, n)". Total adds the iOS session numbers
+    // (input latency + output latency + IO buffer) to the engine's own onset->tone measurement.
+    func latencyLine(_ s: PtStatus) -> String {
+        if s.lat_n == 0 {
+            return "latency: no measurement yet (unmute, stay quiet 0.1 s, then sing a note; missed \(s.lat_missed))"
+        }
+        let d = deviceLatencyMs()
+        let device = d.io + d.input + d.output
+        let total = Double(s.lat_of_avg_ms + s.lat_ft_avg_ms) + device
+        return String(format: "latency: onset\u{2192}found %.1f ms, found\u{2192}tone %.1f ms, device %.1f ms, TOTAL %.1f ms (avg of %llu; last %.1f + %.1f; missed %llu)",
+                      s.lat_of_avg_ms, s.lat_ft_avg_ms, device, total, s.lat_n, s.lat_of_last_ms, s.lat_ft_last_ms, s.lat_missed)
     }
 
     // The audio route as iOS reports it (which mic and which output are really in use).
@@ -74,6 +104,9 @@ final class EngineModel: ObservableObject {
         let s = self.s
         var l: [String] = []
         l.append("PitchTest diagnostics")
+        l.append(startupInfo)
+        l.append(latencyLine(s))
+        l.append(String(format: "analysis window %.1f ms, hop %.2f ms", s.window_ms, s.hop_ms))
         l.append("key \(text(s.key_name)), target \(text(s.target_name)), \(s.muted != 0 ? "MUTED" : "tone on"), level \(String(format: "%.0f", s.gain_db)) dBFS, release \(s.release_ms) ms, chromatic \(s.chromatic), tonic \(s.tonic)")
         l.append(String(format: "now: %.1f Hz, %+.0f c, clarity %.2f, mic %.0f dBFS, valid %d", s.hz, s.cents, s.clarity, 20.0 * log10(Double(max(s.rms, 1e-6))), s.valid))
         l.append("detection: last \(s.det_last_us) us, avg \(s.det_avg_us) us, max \(s.det_max_us) us, chunk max \(s.chunk_max_us) us, over budget \(s.over_budget) of \(s.chunks)")
@@ -81,7 +114,7 @@ final class EngineModel: ObservableObject {
         l.append("target changes \(s.target_changes), tone on \(s.tone_on_events) times, off \(s.tone_off_events) times")
         l.append(String(format: "mic level averaged while tone playing %.1f dBFS, while silent %.1f dBFS", s.rms_db_tone_on, s.rms_db_tone_off))
         l.append(String(format: "callbacks %llu, frames per callback %u..%u, longest gap %.1f ms, late callbacks %llu", s.cb_count, s.cb_frames_min, s.cb_frames_max, s.cb_gap_max_ms, s.cb_late))
-        l.append(String(format: "device buffers (reported): in %.1f ms, out %.1f ms", s.in_buf_ms, s.out_buf_ms))
+        l.append(String(format: "miniaudio buffer capacity (period x periods, NOT a latency): in %.1f ms, out %.1f ms", s.in_buf_ms, s.out_buf_ms))
         if s.leak_state == 3 {
             l.append(String(format: "LEAK TEST: mic with tone OFF %.1f dBFS, with tone ON %.1f dBFS, difference %.1f dB", s.leak_off_db, s.leak_on_db, s.leak_on_db - s.leak_off_db))
         } else if s.leak_state != 0 {
@@ -89,6 +122,7 @@ final class EngineModel: ObservableObject {
         } else {
             l.append("LEAK TEST: not run")
         }
+        l.append(sessionSnapshot(prefix: "now"))
         l.append(routeInfo())
         l.append("recent events (newest first):")
         l.append(contentsOf: events())
@@ -163,12 +197,15 @@ struct ContentView: View {
 
                     GroupBox("Diagnostics (tap Copy report and send it)") {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Detection: avg \(s.det_avg_us) us, max \(s.det_max_us) us; over 10 ms: \(s.over_budget) of \(s.chunks)")
+                            Text(m.latencyLine(s)).foregroundColor(.orange)
+                            Text(String(format: "Window %.1f ms, hop %.2f ms; detector runs %llu", s.window_ms, s.hop_ms, s.chunks))
+                            Text("Detection: avg \(s.det_avg_us) us, max \(s.det_max_us) us; callbacks over their period: \(s.over_budget)")
                             Text("Pitch found \(s.valid_n) windows, none \(s.invalid_n); found/lost changes: \(s.flips)")
                             Text("Target changes: \(s.target_changes); tone on \(s.tone_on_events) / off \(s.tone_off_events) times")
                             Text(String(format: "Mic level while tone plays %.1f dBFS, while silent %.1f dBFS", s.rms_db_tone_on, s.rms_db_tone_off))
                             Text(String(format: "Callbacks %llu, frames %u..%u, longest gap %.1f ms, late %llu", s.cb_count, s.cb_frames_min, s.cb_frames_max, s.cb_gap_max_ms, s.cb_late))
-                            Text(String(format: "Device buffers (reported): in %.1f ms, out %.1f ms", s.in_buf_ms, s.out_buf_ms))
+                            Text(String(format: "miniaudio buffer capacity (not a latency): in %.1f ms, out %.1f ms", s.in_buf_ms, s.out_buf_ms)).font(.footnote)
+                            Text(m.startupInfo).font(.footnote)
                             Text(m.routeInfo()).font(.footnote)
                             if s.leak_state == 1 { Text("Leak test: STAY SILENT, tone off ...").foregroundColor(.orange) }
                             if s.leak_state == 2 { Text("Leak test: STAY SILENT, tone on ...").foregroundColor(.orange) }

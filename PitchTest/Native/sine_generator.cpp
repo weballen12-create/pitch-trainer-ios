@@ -58,7 +58,12 @@ void SineGenerator::setGain(float gain) {
   gain_ = gain < 0.0f ? 0.0f : (gain > 1.0f ? 1.0f : gain);
 }
 
-void SineGenerator::setOn(bool on) { on_ = on; }
+// Starting from silence restarts the phase at zero (a click-free, repeatable onset); a tone that is already
+// sounding keeps its phase.
+void SineGenerator::setOn(bool on) {
+  if (on && !on_ && amp_ == 0.0f) phase_ = 0;
+  on_ = on;
+}
 
 void SineGenerator::render(int16_t* out, size_t n) {
   const float target = on_ ? gain_ : 0.0f;

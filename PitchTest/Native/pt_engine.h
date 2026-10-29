@@ -12,7 +12,7 @@ typedef struct {
   float rms;           // mic level of the analysis window, full scale = 1
   float clarity;       // detector clarity of the last window
   float gain_db;       // tone level, dBFS
-  int valid;           // a pitch was found in this window
+  int valid;           // "found": the gate is on
   int target;          // target MIDI note, -1 if none
   int muted;
   int chromatic;
@@ -23,14 +23,16 @@ typedef struct {
   unsigned det_avg_us;
   unsigned det_max_us;
   unsigned chunk_max_us;
-  unsigned long long over_budget;   // 10 ms chunks that took longer than 10 ms
-  unsigned long long chunks;
-  float in_buf_ms;     // device buffers reported
+  unsigned long long over_budget;   // callbacks whose processing took longer than the callback period
+  unsigned long long chunks;        // detector runs
+  float in_buf_ms;     // miniaudio buffer capacity (period x periods). NOT a latency.
   float out_buf_ms;
+  float window_ms;     // analysis window length
+  float hop_ms;        // time between detector runs
 
   // ---- diagnostics (since Start) ----
-  unsigned long long valid_n, invalid_n;      // detection passes with / without a pitch
-  unsigned long long flips;                   // pitch found <-> lost changes
+  unsigned long long valid_n, invalid_n;      // detector runs with / without a usable pitch
+  unsigned long long flips;                   // found <-> lost changes
   unsigned long long target_changes;          // target note changes (incl. appearing/vanishing)
   unsigned long long tone_on_events, tone_off_events;   // tone audible <-> silent changes
   float rms_db_tone_on, rms_db_tone_off;      // average mic level while the tone was / was not playing
@@ -40,6 +42,13 @@ typedef struct {
   unsigned long long cb_late;                 // callbacks more than 1.5x the expected spacing after the last
   int leak_state;                             // 0 idle, 1 measuring tone OFF, 2 measuring tone ON, 3 done
   float leak_off_db, leak_on_db;              // mic level in each phase of the leak test (dBFS)
+
+  // ---- latency probe: onset -> found -> tone, in the engine's own sample clock ----
+  unsigned long long lat_n;                   // completed measurements
+  unsigned long long lat_missed;              // onsets where no tone appeared in time (muted, or no pitch)
+  float lat_of_last_ms, lat_ft_last_ms;       // onset->found, found->tone (last)
+  float lat_of_avg_ms, lat_ft_avg_ms;         // averages
+  float lat_of_max_ms, lat_ft_max_ms;
 
   char target_name[8];
   char key_name[16];
@@ -58,6 +67,7 @@ void pt_set_tonic(int on);
 void pt_release_step(int up);       // release hold +/- 15 ms (15..600)
 void pt_leak_test(void);            // stay silent: 2 s tone off, then 2 s of a 440 Hz tone at the current level
 void pt_reset_metrics(void);
+double pt_io_buffer_seconds(void);   // the IO buffer duration the app asks iOS for (phone_tuning.h)
 void pt_get_status(PtStatus* out);
 int pt_event(int index, char* buf, int len);   // recent events, 0 = newest; returns 0 if none
 
