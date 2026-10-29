@@ -77,7 +77,7 @@ struct ContentView: View {
 
                     GroupBox("Tone") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(String(format: "%@   level %.0f dBFS (cap -36)", s.muted != 0 ? "MUTED" : "tone ON", s.gain_db))
+                            Text(String(format: "%@   level %.0f dBFS (cap -24)", s.muted != 0 ? "MUTED" : "tone ON", s.gain_db))
                             HStack {
                                 Button(s.muted != 0 ? "Unmute" : "Mute") { pt_set_muted(s.muted != 0 ? 0 : 1) }
                                 Button("Quieter") { pt_gain_step(0) }
@@ -87,6 +87,11 @@ struct ContentView: View {
                                 Button("Key \u{2212}") { pt_set_key_slot(s.key_slot - 1) }
                                 Text(text(s.key_name)).frame(minWidth: 90)
                                 Button("Key +") { pt_set_key_slot(s.key_slot + 1) }
+                            }.buttonStyle(.bordered)
+                            HStack {
+                                Button("Release \u{2212}") { pt_release_step(0) }
+                                Text("release hold \(s.release_ms) ms").frame(minWidth: 130)
+                                Button("Release +") { pt_release_step(1) }
                             }.buttonStyle(.bordered)
                             HStack {
                                 Button(s.chromatic != 0 ? "Chromatic: ON" : "Chromatic: off") { pt_set_chromatic(s.chromatic != 0 ? 0 : 1) }

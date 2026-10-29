@@ -31,7 +31,9 @@ constexpr float kRate = static_cast<float>(kMicSampleRateHz);
 
 // Headphones are far more sensitive than the board's speaker or exciter: start very quiet, cap low.
 constexpr float kStartGain = 0.00316f;  // -50 dBFS
-constexpr float kMaxGain = 0.0158f;     // -36 dBFS
+constexpr float kMaxGain = 0.0631f;     // -24 dBFS (was -36; raised because it was too quiet)
+constexpr uint32_t kReleaseStepMs = 15;
+constexpr uint32_t kReleaseStart = 120;  // ms; the board's 15 ms makes the tone blip
 
 // Chromatic order from A, like the page's key buttons.
 constexpr int kKeyOrder[12] = {9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8};
@@ -42,6 +44,7 @@ struct Shared {
   std::atomic<int> key_slot{3};  // C
   std::atomic<bool> chromatic{false};
   std::atomic<bool> tonic{false};
+  std::atomic<uint32_t> release_ms{kReleaseStart};
   std::atomic<float> hz{0}, rms{0}, cents{0};
   std::atomic<bool> valid{false};
   std::atomic<int> target{-1};
@@ -57,7 +60,7 @@ class Engine {
     if (!detector_.begin(kAnalysisWindowFrames)) return false;
     detector_.setClarityThreshold(kMpmK);
     detector_.setMinVolumeRms(kMinVolumeRms);
-    tracker_.begin({kTargetHysteresisCents, kTargetReleaseMs, kTargetSwitchHoldMs, kTargetOctaveDownHoldMs,
+    tracker_.begin({kTargetHysteresisCents, kReleaseStart, kTargetSwitchHoldMs, kTargetOctaveDownHoldMs,
                     kTargetHoldMaxJumpSemitones},
                    majorKey(kKeyOrder[3]));
     analysis_.assign(kAnalysisWindowFrames, 0.0f);
@@ -100,6 +103,7 @@ class Engine {
  private:
   void chunk(const float* x, Shared& sh) {
     tracker_.setChromatic(sh.chromatic.load());
+    tracker_.setReleaseMs(sh.release_ms.load());
     const int slot = sh.key_slot.load();
     if (slot != slot_) {
       slot_ = slot;
@@ -215,6 +219,13 @@ void pt_gain_step(int up) { g_shared.gain.store(stepGain(g_shared.gain.load(), u
 void pt_set_key_slot(int slot) { g_shared.key_slot.store(((slot % 12) + 12) % 12); }
 void pt_set_chromatic(int on) { g_shared.chromatic.store(on != 0); }
 void pt_set_tonic(int on) { g_shared.tonic.store(on != 0); }
+void pt_release_step(int up) {
+  uint32_t r = g_shared.release_ms.load();
+  r = up ? r + kReleaseStepMs : (r > kReleaseStepMs ? r - kReleaseStepMs : kReleaseStepMs);
+  if (r < kReleaseStepMs) r = kReleaseStepMs;
+  if (r > 600) r = 600;
+  g_shared.release_ms.store(r);
+}
 
 void pt_get_status(PtStatus* o) {
   memset(o, 0, sizeof(*o));
@@ -228,6 +239,7 @@ void pt_get_status(PtStatus* o) {
   o->chromatic = g_shared.chromatic.load();
   o->tonic = g_shared.tonic.load();
   o->key_slot = g_shared.key_slot.load();
+  o->release_ms = g_shared.release_ms.load();
   o->det_last_us = g_shared.det_last_us.load();
   const uint64_t n = g_shared.det_count.load();
   o->det_avg_us = n ? static_cast<unsigned>(g_shared.det_total_us.load() / n) : 0;

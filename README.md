@@ -4,7 +4,7 @@ A small iPhone test of the cheek pitch trainer's idea in software: mic, pitch de
 headphones. It uses a COPY of the singing-tool library code (decimator, MPM pitch detector, target-note tracker, sine
 generator) in `PitchTest/Native/`, so it does not touch the board project.
 
-It starts muted and quiet (-50 dBFS, capped at -36 dBFS). Wired headphones only; keep them out of your ears until set.
+It starts muted and quiet (-50 dBFS, capped at -24 dBFS). Wired headphones only; keep them out of your ears until set.
 
 ## Build (GitHub Actions, free macOS runner)
 Push to `main` or run the workflow by hand. The artifact `PitchTest-unsigned-ipa` is an unsigned `.ipa`.

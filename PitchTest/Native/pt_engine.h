@@ -17,6 +17,7 @@ typedef struct {
   int chromatic;
   int tonic;
   int key_slot;        // 0..11, chromatic from A
+  unsigned release_ms; // how long the tone keeps going after the voice drops out
   unsigned det_last_us;
   unsigned det_avg_us;
   unsigned det_max_us;
@@ -39,6 +40,7 @@ void pt_gain_step(int up);          // 3 dB step, capped
 void pt_set_key_slot(int slot);     // 0..11
 void pt_set_chromatic(int on);
 void pt_set_tonic(int on);
+void pt_release_step(int up);       // release hold +/- 15 ms (15..600)
 void pt_get_status(PtStatus* out);
 
 #ifdef __cplusplus
