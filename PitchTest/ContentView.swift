@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // Reads the engine status ten times a second. All the audio work is in the C++ engine (Native/pt_engine.mm).
 final class EngineModel: ObservableObject {
@@ -7,7 +8,19 @@ final class EngineModel: ObservableObject {
     @Published var s = PtStatus()
     private var timer: Timer?
 
+    // Earbuds with a mic in the cable make iOS use THAT mic, which sits next to the earbuds and can pick the tone
+    // up (cable crosstalk or leakage). Prefer the phone's own built-in mic.
+    private func preferBuiltInMic() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, options: [])
+        try? session.setActive(true)
+        if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+            try? session.setPreferredInput(builtIn)
+        }
+    }
+
     func start() {
+        preferBuiltInMic()
         let r = pt_start()
         if r == 0 {
             running = true
@@ -60,6 +73,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Key: \(text(s.key_name))   Target: \(text(s.target_name))")
                             Text(String(format: "You sing: %.1f Hz  (%+.0f cents)", s.hz, s.cents))
+                            Text(String(format: "Mic level: %.0f dBFS", 20.0 * log10(Double(max(s.rms, 1e-6)))))
                             Text(s.valid != 0 ? "pitch found" : "no pitch")
                                 .foregroundColor(s.valid != 0 ? .green : .secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
