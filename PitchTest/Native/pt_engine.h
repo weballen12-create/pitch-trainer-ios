@@ -9,7 +9,8 @@ extern "C" {
 typedef struct {
   float hz;            // detected pitch (0 if none)
   float cents;         // distance from the target note, cents
-  float rms;
+  float rms;           // mic level of the analysis window, full scale = 1
+  float clarity;       // detector clarity of the last window
   float gain_db;       // tone level, dBFS
   int valid;           // a pitch was found in this window
   int target;          // target MIDI note, -1 if none
@@ -24,8 +25,22 @@ typedef struct {
   unsigned chunk_max_us;
   unsigned long long over_budget;   // 10 ms chunks that took longer than 10 ms
   unsigned long long chunks;
-  float in_buf_ms;     // device buffers Windows/iOS report
+  float in_buf_ms;     // device buffers reported
   float out_buf_ms;
+
+  // ---- diagnostics (since Start) ----
+  unsigned long long valid_n, invalid_n;      // detection passes with / without a pitch
+  unsigned long long flips;                   // pitch found <-> lost changes
+  unsigned long long target_changes;          // target note changes (incl. appearing/vanishing)
+  unsigned long long tone_on_events, tone_off_events;   // tone audible <-> silent changes
+  float rms_db_tone_on, rms_db_tone_off;      // average mic level while the tone was / was not playing
+  unsigned long long cb_count;                // audio callbacks
+  unsigned cb_frames_min, cb_frames_max;      // frames per callback
+  float cb_gap_max_ms;                        // longest time between two callbacks
+  unsigned long long cb_late;                 // callbacks more than 1.5x the expected spacing after the last
+  int leak_state;                             // 0 idle, 1 measuring tone OFF, 2 measuring tone ON, 3 done
+  float leak_off_db, leak_on_db;              // mic level in each phase of the leak test (dBFS)
+
   char target_name[8];
   char key_name[16];
   char device_in[64];
@@ -41,7 +56,10 @@ void pt_set_key_slot(int slot);     // 0..11
 void pt_set_chromatic(int on);
 void pt_set_tonic(int on);
 void pt_release_step(int up);       // release hold +/- 15 ms (15..600)
+void pt_leak_test(void);            // stay silent: 2 s tone off, then 2 s of a 440 Hz tone at the current level
+void pt_reset_metrics(void);
 void pt_get_status(PtStatus* out);
+int pt_event(int index, char* buf, int len);   // recent events, 0 = newest; returns 0 if none
 
 #ifdef __cplusplus
 }
