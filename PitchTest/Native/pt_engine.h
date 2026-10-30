@@ -30,6 +30,7 @@ typedef struct {
   int rec_on;                       // recording is running
   float rec_seconds;                // audio written so far
   unsigned long long rec_dropped;   // samples lost because the disk writer fell behind (should stay 0)
+  float gate_db;       // mic gate: the voice must be louder than this (RMS, dBFS)
   float window_ms;     // analysis window length
   float hop_ms;        // time between detector runs
 
@@ -67,6 +68,7 @@ void pt_gain_step(int up);          // 3 dB step, capped
 void pt_set_key_slot(int slot);     // 0..11
 void pt_set_chromatic(int on);
 void pt_set_tonic(int on);
+void pt_gate_step(int less_sensitive);   // mic gate +/- 3 dB (-70..-20 dBFS); 1 = raise it (hears less)
 void pt_release_step(int up);       // release hold +/- 15 ms (15..600)
 void pt_leak_test(void);            // stay silent: 2 s tone off, then 2 s of a 440 Hz tone at the current level
 void pt_reset_metrics(void);

@@ -57,6 +57,7 @@ struct Shared {
   std::atomic<bool> chromatic{false};
   std::atomic<bool> tonic{false};
   std::atomic<uint32_t> release_ms{kPhReleaseMs};
+  std::atomic<float> gate_db{kPhGateDbDefault};
   std::atomic<float> hz{0}, rms{0}, cents{0}, clarity{0};
   std::atomic<bool> valid{false};
   std::atomic<int> target{-1};
@@ -257,7 +258,7 @@ class Engine {
     window_.begin(kWinDec);
     if (!detector_.begin(kWinDec)) return false;
     detector_.setClarityThreshold(kMpmK);
-    detector_.setMinVolumeRms(kMinVolumeRms);
+    gate_applied_db_ = 1000.0f;   // forces the first block to apply the gate
     tracker_.begin({kTargetHysteresisCents, kPhReleaseMs, kTargetSwitchHoldMs, kTargetOctaveDownHoldMs,
                     kTargetHoldMaxJumpSemitones},
                    majorKey(0));
@@ -299,6 +300,12 @@ class Engine {
   void block(const float* in, float* out, size_t k, Shared& sh) {
     if (sh.reset_requested.exchange(false)) resetMetrics(sh);
     block_end_ = clock_ + static_cast<int64_t>(k);
+    const float gate_db = sh.gate_db.load();
+    if (gate_db != gate_applied_db_) {
+      gate_applied_db_ = gate_db;
+      gate_rms_ = powf(10.0f, gate_db / 20.0f);
+      detector_.setMinVolumeRms(gate_rms_);   // the detector refuses windows quieter than this
+    }
     tracker_.setChromatic(sh.chromatic.load());
     tracker_.setReleaseMs(sh.release_ms.load());
     const int slot = sh.key_slot.load();
@@ -416,7 +423,7 @@ class Engine {
 
     // Asymmetric gate: ONE good window starts "found"; a weaker one keeps it; "lost" only after kPhLostHoldMs of nothing.
     const bool range_ok = r.frequency_hz >= kPhMinHz && r.frequency_hz <= kPhMaxHz;
-    const bool level_ok = rms >= kMinVolumeRms;
+    const bool level_ok = rms >= gate_rms_;
     const bool start_ok = range_ok && level_ok && r.clarity >= kPhStartClarity;
     const bool stay_ok = range_ok && level_ok && r.clarity >= kPhStayClarity;
     bool usable = false;
@@ -538,6 +545,7 @@ class Engine {
   size_t since_hop_ = 0;     // decimated samples since the last detector run
   int slot_ = 3;
   bool gate_ = false;
+  float gate_applied_db_ = 1000.0f, gate_rms_ = 0.0f;
   uint32_t last_good_ms_ = 0;
   bool audible_ = false;
   int prev_target_ = -1;
@@ -645,6 +653,12 @@ void pt_release_step(int up) {
   if (r > 600) r = 600;
   g_shared.release_ms.store(r);
 }
+void pt_gate_step(int less_sensitive) {
+  float g = g_shared.gate_db.load() + (less_sensitive ? kPhGateStepDb : -kPhGateStepDb);
+  if (g < kPhGateDbMin) g = kPhGateDbMin;
+  if (g > kPhGateDbMax) g = kPhGateDbMax;
+  g_shared.gate_db.store(g);
+}
 void pt_leak_test(void) {
   g_shared.leak_off_db.store(-120.0f);
   g_shared.leak_on_db.store(-120.0f);
@@ -679,6 +693,7 @@ void pt_get_status(PtStatus* o) {
   o->chunks = n;
   o->in_buf_ms = g_in_ms;
   o->out_buf_ms = g_out_ms;
+  o->gate_db = s.gate_db.load();
   o->rec_on = g_rec.active() ? 1 : 0;
   o->rec_seconds = static_cast<float>(static_cast<double>(g_rec.samples()) / kRate);
   o->rec_dropped = g_rec.dropped();

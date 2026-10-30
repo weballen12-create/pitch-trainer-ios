@@ -15,6 +15,14 @@ constexpr float kPhMinHz = 75.0f;            // valid pitch range
 constexpr float kPhMaxHz = 1500.0f;
 constexpr uint32_t kPhLostHoldMs = 100;      // "lost" only after this long without a stay-valid window
 
+// ---- mic gate (adjustable on screen) -----------------------------------------------------------------------
+// The voice window must be at least this loud (RMS, dBFS) to count. The board's mic needed -56; a phone mic is much
+// hotter and hears the room, so the default is higher. Raise it (less sensitive) until the room is ignored.
+constexpr float kPhGateDbDefault = -46.0f;
+constexpr float kPhGateDbMin = -70.0f;
+constexpr float kPhGateDbMax = -20.0f;
+constexpr float kPhGateStepDb = 3.0f;
+
 // ---- tone shape ---------------------------------------------------------------------------------------------
 constexpr float kPhAttackMs = 0.0f;          // fade-in: 0 = the tone starts at full level on its first sample (the phase
                                              // restarts at zero, so it starts on a zero crossing; a hard start may still tick)

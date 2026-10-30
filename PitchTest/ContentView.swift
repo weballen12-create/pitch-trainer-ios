@@ -160,6 +160,7 @@ final class EngineModel: ObservableObject {
         l.append(latencyLine(s))
         l.append(String(format: "analysis window %.1f ms, hop %.2f ms", s.window_ms, s.hop_ms))
         l.append("key \(text(s.key_name)), target \(text(s.target_name)), \(s.muted != 0 ? "MUTED" : "tone on"), level \(String(format: "%.0f", s.gain_db)) dBFS, release \(s.release_ms) ms, chromatic \(s.chromatic), tonic \(s.tonic)")
+        l.append(String(format: "mic gate %.0f dBFS", s.gate_db))
         l.append(String(format: "now: %.1f Hz, %+.0f c, clarity %.2f, mic %.0f dBFS, valid %d", s.hz, s.cents, s.clarity, 20.0 * log10(Double(max(s.rms, 1e-6))), s.valid))
         l.append("detection: last \(s.det_last_us) us, avg \(s.det_avg_us) us, max \(s.det_max_us) us, chunk max \(s.chunk_max_us) us, over budget \(s.over_budget) of \(s.chunks)")
         l.append("windows with pitch \(s.valid_n), without \(s.invalid_n), found/lost changes \(s.flips)")
@@ -278,6 +279,12 @@ struct ContentView: View {
                     GroupBox("Tone") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(String(format: "%@   level %.0f dBFS (cap -24)", s.muted != 0 ? "MUTED" : "tone ON", s.gain_db))
+                            Text(String(format: "Mic gate: %.0f dBFS. Your voice must be louder than this; room sound quieter than it is ignored.", s.gate_db))
+                                .font(.footnote)
+                            HStack {
+                                Button("More sensitive") { pt_gate_step(0) }
+                                Button("Less sensitive") { pt_gate_step(1) }
+                            }.buttonStyle(.bordered)
                             HStack {
                                 Button(s.muted != 0 ? "Unmute" : "Mute") { pt_set_muted(s.muted != 0 ? 0 : 1) }
                                 Button("Quieter") { pt_gain_step(0) }
