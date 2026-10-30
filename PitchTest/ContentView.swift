@@ -10,9 +10,50 @@ final class EngineModel: ObservableObject {
     @Published var startupInfo = ""
     @Published var recording = false
     @Published var takes: [Take] = []
+    @Published var inputs: [AVAudioSessionPortDescription] = []
+    @Published var chosenInputUID: String = UserDefaults.standard.string(forKey: "inputUID") ?? ""   // "" = the phone's own mic
     private var timer: Timer?
 
-    init() { refreshTakes() }
+    init() {
+        refreshTakes()
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, options: [])   // so the list of inputs includes earbud / headset mics
+        refreshInputs()
+        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refreshInputs()
+        }
+    }
+
+    // ---- microphone choice: the phone's own mic, or the earbuds' / headset mic when one is plugged in ----
+    func refreshInputs() {
+        inputs = AVAudioSession.sharedInstance().availableInputs ?? []
+    }
+
+    func isChosen(_ port: AVAudioSessionPortDescription) -> Bool {
+        if chosenInputUID.isEmpty { return port.portType == .builtInMic }
+        return port.uid == chosenInputUID
+    }
+
+    // Applies the choice to the audio session. An unplugged choice falls back to the phone's own mic.
+    private func applyInput() {
+        let session = AVAudioSession.sharedInstance()
+        let avail = session.availableInputs ?? []
+        if !chosenInputUID.isEmpty, let p = avail.first(where: { $0.uid == chosenInputUID }) {
+            try? session.setPreferredInput(p)
+        } else if let builtIn = avail.first(where: { $0.portType == .builtInMic }) {
+            try? session.setPreferredInput(builtIn)
+        }
+    }
+
+    // Switching the input restarts the audio engine (a running recording is stopped and saved first).
+    func chooseInput(_ port: AVAudioSessionPortDescription) {
+        let wasRunning = running
+        if wasRunning { stop() }
+        chosenInputUID = port.portType == .builtInMic ? "" : port.uid
+        UserDefaults.standard.set(chosenInputUID, forKey: "inputUID")
+        if wasRunning { start() } else { applyInput() }
+        refreshInputs()
+    }
 
     // ---- recording: <name>.wav (raw mic, 16-bit mono 48 kHz) + <name>.csv (one row per detector run) ----
     func recordingsDir() -> URL {
@@ -61,16 +102,14 @@ final class EngineModel: ObservableObject {
         refreshTakes()
     }
 
-    // Earbuds with a mic in the cable make iOS use THAT mic, which sits next to the earbuds and can pick the tone
-    // up (cable crosstalk or leakage). Prefer the phone's own built-in mic.
+    // The phone's own mic by default (an earbud cable mic sits next to the earbuds and can pick the tone up); the
+    // Microphone box lets you pick the earbuds' mic instead.
     private func preferBuiltInMic() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, options: [])
         try? session.setPreferredIOBufferDuration(pt_io_buffer_seconds())
         try? session.setActive(true)
-        if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(builtIn)
-        }
+        applyInput()
     }
 
     func start() {
@@ -233,6 +272,23 @@ struct ContentView: View {
                 Button(m.running ? "Stop" : "Start") { m.running ? m.stop() : m.start() }
                     .buttonStyle(.borderedProminent)
                 if !m.error.isEmpty { Text(m.error).foregroundColor(.red) }
+
+                GroupBox("Microphone") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(m.inputs, id: \.uid) { p in
+                            Button((m.isChosen(p) ? "\u{2713} " : "") + p.portName + (p.portType == .builtInMic ? " (phone mic)" : " (\(p.portType.rawValue))")) {
+                                m.chooseInput(p)
+                            }.buttonStyle(.bordered)
+                        }
+                        if m.inputs.count < 2 {
+                            Text("Only the phone mic is available. Plug in headphones with a mic to see them here.")
+                                .font(.footnote).foregroundColor(.secondary)
+                        }
+                        Text("Switching restarts the audio. After switching to an earbud mic, run the Leak test (stay silent) to check it does not hear the tone.")
+                            .font(.footnote).foregroundColor(.secondary)
+                        Text(m.routeInfo()).font(.footnote)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 GroupBox("Record") {
                     VStack(alignment: .leading, spacing: 8) {
