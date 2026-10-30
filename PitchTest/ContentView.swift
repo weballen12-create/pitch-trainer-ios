@@ -11,6 +11,10 @@ final class EngineModel: ObservableObject {
     @Published var recording = false
     @Published var takes: [Take] = []
     @Published var inputs: [AVAudioSessionPortDescription] = []
+    // "Raw mic": ask iOS for its measurement mode, which switches off the system's automatic input processing
+    // (gain control, noise suppression, echo handling). miniaudio opens the session in the default mode, so this is
+    // applied after the engine starts and again whenever the switch is flipped.
+    @Published var rawMic: Bool = (UserDefaults.standard.object(forKey: "rawMic") as? Bool) ?? true
     @Published var chosenInputUID: String = UserDefaults.standard.string(forKey: "inputUID") ?? ""   // "" = the phone's own mic
     private var timer: Timer?
 
@@ -32,6 +36,18 @@ final class EngineModel: ObservableObject {
     func isChosen(_ port: AVAudioSessionPortDescription) -> Bool {
         if chosenInputUID.isEmpty { return port.portType == .builtInMic }
         return port.uid == chosenInputUID
+    }
+
+    func applyMode() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setMode(rawMic ? .measurement : .default)
+        try? session.setPreferredIOBufferDuration(pt_io_buffer_seconds())
+    }
+
+    func setRawMic(_ on: Bool) {
+        rawMic = on
+        UserDefaults.standard.set(on, forKey: "rawMic")
+        if running { applyMode() }
     }
 
     // Applies the choice to the audio session. An unplugged choice falls back to the phone's own mic.
@@ -117,7 +133,7 @@ final class EngineModel: ObservableObject {
         let r = pt_start()
         if r == 0 {
             // miniaudio sets its own IO buffer while starting, so ask again and then log what iOS really granted.
-            try? AVAudioSession.sharedInstance().setPreferredIOBufferDuration(pt_io_buffer_seconds())
+            applyMode()
             startupInfo = sessionSnapshot(prefix: "startup")
             running = true
             error = ""
@@ -178,6 +194,7 @@ final class EngineModel: ObservableObject {
         lines.append(String(format: "session: %.0f Hz, IO buffer %.1f ms, input latency %.1f ms, output latency %.1f ms",
                             session.sampleRate, session.ioBufferDuration * 1000, session.inputLatency * 1000, session.outputLatency * 1000))
         lines.append(String(format: "phone volume: %.2f", session.outputVolume))
+        lines.append("session mode: \(session.mode.rawValue), category: \(session.category.rawValue), raw-mic switch: \(rawMic ? "ON (measurement)" : "off (default)")")
         return lines.joined(separator: "\n")
     }
 
@@ -284,7 +301,11 @@ struct ContentView: View {
                             Text("Only the phone mic is available. Plug in headphones with a mic to see them here.")
                                 .font(.footnote).foregroundColor(.secondary)
                         }
-                        Text("Switching restarts the audio. After switching to an earbud mic, run the Leak test (stay silent) to check it does not hear the tone.")
+                        Button(m.rawMic ? "System mic processing: OFF (raw mic)" : "System mic processing: ON (iOS default)") { m.setRawMic(!m.rawMic) }
+                            .buttonStyle(.bordered)
+                        Text("Raw mic asks iOS to turn off automatic gain, noise suppression and echo handling. If the mic level dips in a rhythm while the tone plays, try this setting.")
+                            .font(.footnote).foregroundColor(.secondary)
+                        Text("Switching the input restarts the audio. After switching to an earbud mic, run the Leak test (stay silent) to check it does not hear the tone.")
                             .font(.footnote).foregroundColor(.secondary)
                         Text(m.routeInfo()).font(.footnote)
                     }.frame(maxWidth: .infinity, alignment: .leading)
